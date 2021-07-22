@@ -512,6 +512,7 @@ int CLI::run(int argc, char **argv)
                 }
                 print->apply(model, m_print_config);
                 std::string err = print->validate();
+
                 if (! err.empty()) {
                     boost::nowide::cerr << err << std::endl;
                     return 1;
@@ -531,6 +532,7 @@ int CLI::run(int argc, char **argv)
                             // We need to finalize the filename beforehand because the export function sets the filename inside the zip metadata
                             outfile_final = sla_print.print_statistics().finalize_output_path(outfile);
                             sla_archive.export_print(outfile_final, sla_print);
+                            print_with_supports(sla_print);
                         }
                         if (outfile != outfile_final) {
                             if (Slic3r::rename_file(outfile, outfile_final)) {
@@ -625,7 +627,7 @@ bool CLI::setup(int argc, char **argv)
     // Notify user if blacklisted library is already loaded (Nahimic)
     // If there are cases of no reports with blacklisted lib - this check should be performed later.
     // Some libraries are loaded when we load libraries during startup.
-    if (LibraryCheck::get_instance().perform_check()) { 
+    if (LibraryCheck::get_instance().perform_check()) {
         std::wstring text = L"Following libraries has been detected inside of the PrusaSlicer process."
         L" We suggest stopping or uninstalling these services if you experience crashes or unexpected behaviour while using PrusaSlicer.\n\n";
         text += LibraryCheck::get_instance().get_blacklisted_string();
@@ -685,7 +687,7 @@ bool CLI::setup(int argc, char **argv)
         if (opt_loglevel != 0)
             set_logging_level(opt_loglevel->value);
     }
-    
+
     //FIXME Validating at this stage most likely does not make sense, as the config is not fully initialized yet.
     std::string validity = m_config.validate();
 
@@ -695,7 +697,7 @@ bool CLI::setup(int argc, char **argv)
             m_config.option(optdef.first, true);
 
     set_data_dir(m_config.opt_string("datadir"));
-    
+
     //FIXME Validating at this stage most likely does not make sense, as the config is not fully initialized yet.
     if (!validity.empty()) {
         boost::nowide::cerr << "error: " << validity << std::endl;
@@ -770,6 +772,85 @@ bool CLI::export_models(IO::ExportFormat format)
         }
     }
     return true;
+}
+
+void Slic3r::CLI::print_with_supports(const Slic3r::SLAPrint& sla_print)
+{
+    const PrintObjects& objects = sla_print.objects();
+    TriangleMesh mesh;
+    for (const SLAPrintObject* object : objects)
+    {
+        const ModelObject* model_object = object->model_object();
+        Transform3d mesh_trafo_inv = object->trafo().inverse();
+        bool is_left_handed = object->is_left_handed();
+
+        TriangleMesh pad_mesh;
+        bool has_pad_mesh = object->has_mesh(slaposPad);
+        if (has_pad_mesh)
+        {
+            pad_mesh = object->get_mesh(slaposPad);
+            pad_mesh.transform(mesh_trafo_inv);
+        }
+
+        TriangleMesh supports_mesh;
+        bool has_supports_mesh = object->has_mesh(slaposSupportTree);
+        if (has_supports_mesh)
+        {
+            supports_mesh = object->get_mesh(slaposSupportTree);
+            supports_mesh.transform(mesh_trafo_inv);
+        }
+        const std::vector<SLAPrintObject::Instance>& obj_instances = object->instances();
+        for (const SLAPrintObject::Instance& obj_instance : obj_instances)
+        {
+            auto it = std::find_if(model_object->instances.begin(), model_object->instances.end(),
+                [&obj_instance](const ModelInstance* mi) { return mi->id() == obj_instance.instance_id; });
+            assert(it != model_object->instances.end());
+
+            if (it != model_object->instances.end())
+            {
+                bool one_inst_only = false;
+
+                int instance_idx = it - model_object->instances.begin();
+                const Transform3d& inst_transform = one_inst_only
+                    ? Transform3d::Identity()
+                    : object->model_object()->instances[instance_idx]->get_transformation().get_matrix();
+
+                TriangleMesh inst_mesh;
+
+                if (has_pad_mesh)
+                {
+                    TriangleMesh inst_pad_mesh = pad_mesh;
+                    inst_pad_mesh.transform(inst_transform, is_left_handed);
+                    inst_mesh.merge(inst_pad_mesh);
+                }
+
+                if (has_supports_mesh)
+                {
+                    TriangleMesh inst_supports_mesh = supports_mesh;
+                    inst_supports_mesh.transform(inst_transform, is_left_handed);
+                    inst_mesh.merge(inst_supports_mesh);
+                }
+
+                TriangleMesh inst_object_mesh = object->get_mesh_to_slice();
+                inst_object_mesh.transform(mesh_trafo_inv);
+                inst_object_mesh.transform(inst_transform, is_left_handed);
+
+                inst_mesh.merge(inst_object_mesh);
+
+                // ensure that the instance lays on the bed
+                inst_mesh.translate(0.0f, 0.0f, -inst_mesh.bounding_box().min[2]);
+
+                // merge instance with global mesh
+                mesh.merge(inst_mesh);
+
+                if (one_inst_only)
+                    break;
+            }
+        }
+    }
+    std::string path = this->output_filepath(m_models[0], IO::STL);
+    path = path.substr(0, path.size() - 4) + "_with_supports.stl";
+    Slic3r::store_stl(path.c_str(), &mesh, true);
 }
 
 std::string CLI::output_filepath(const Model &model, IO::ExportFormat format) const

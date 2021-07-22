@@ -7,14 +7,14 @@
 namespace Slic3r {
 
 namespace IO {
-	enum ExportFormat : int { 
-        AMF, 
-        OBJ, 
-        STL, 
-        // SVG, 
-        TMF, 
-        Gcode
-    };
+enum ExportFormat : int {
+    AMF,
+    OBJ,
+    STL,
+    // SVG,
+    TMF,
+    Gcode
+};
 }
 
 class CLI {
@@ -31,15 +31,17 @@ private:
     std::vector<Model>          m_models;
 
     bool setup(int argc, char **argv);
-    
+
     /// Prints usage of the CLI.
     void print_help(bool include_print_options = false, PrinterTechnology printer_technology = ptAny) const;
-    
+
     /// Exports loaded models to a file of the specified format, according to the options affecting output filename.
     bool export_models(IO::ExportFormat format);
-    
+
+    void print_with_supports(const Slic3r::SLAPrint &sla_print);
+
     bool has_print_action() const { return m_config.opt_bool("export_gcode") || m_config.opt_bool("export_sla"); }
-    
+
     std::string output_filepath(const Model &model, IO::ExportFormat format) const;
 };
 
